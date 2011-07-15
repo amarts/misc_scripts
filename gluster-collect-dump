@@ -1,0 +1,103 @@
+#!/bin/bash -x
+
+# Assumes a passwordless ssh setup within all the glusterd storage pools
+#
+# From client need a gluster mountpoint
+#
+
+_init()
+{
+    given_option="$1";
+    option=$(echo "$1" | sed -e 's#/$##g');
+
+    volume_name="";
+    server_name="";
+    # it is a directory, and hence check for the existance in mount output
+    if [ -d $option ]; then
+        volume_name=$(mount | grep $option | cut -f1 -d' ' | cut -f2 -d '/');
+        server_name=$(mount | grep $option | cut -f1 -d' ' | cut -f1 -d ':');
+    else
+        volume_name="$option";
+    fi
+
+    output_path="glusterfs-details-$(date +%Y.%m.%d.%H.%M.%S)";
+    mkdir -p $output_path;    
+}
+
+get_client_details()
+{
+    if [ -z "$server_name" ]; then
+        return;
+    fi
+
+    clnt_process_list=$(ps ax| grep volfile-id | grep $option)
+    client_pid=$(echo $clnt_process_list | cut -f1 -d' ');
+    clnt_logfile=$(echo $clnt_process_list | sed -e 's#.*--log-file=\([^ ]*\) --.*#\1#g');
+    if [ -n "$clnt_logfile" ]; then
+        cp $clnt_logfile $output_path/client.logfile
+    else
+        mountpt_logpath=$(echo $given_option | sed -e 's#/#-#g' | sed -e 's#^-##g');
+        clnt_logfile=$(echo /var/log/glusterfs/${mountpt_logpath}.log);
+        if [ -f $clnt_logfile ] ; then
+            cp $clnt_logfile $output_path/client.logfile;
+        else
+            clnt_logdir=$(which glusterfs | xargs dirname | xargs dirname);
+            clnt_logfile=$(echo ${clnt_logdir}/var/log/glusterfs/${mountpt_logpath}.log);
+            cp $clnt_logfile $output_path/client.logfile;
+        fi
+    fi
+    kill -USR1 $client_pid
+    mv /tmp/glusterdump.$client_pid $output_path/client.glusterdump;
+}
+
+get_brick_details()
+{
+    if [ -n "$server_name" ]; then
+        ssh $server_name gluster volume info $volume_name > $output_path/volume-info
+    else
+        gluster volume info $volume_name > $output_path/volume-info
+    fi
+
+    bricks=$(cat $output_path/volume-info | grep '^Brick[0-9]\+' | cut -f2 -d' ');
+    for brick in $bricks; do
+        # Get the brick path for writing the files
+        brick_path=$(echo $brick | sed -e 's#/#-#g' | sed -e 's#:##g');
+
+        # separate out host and path
+        host=$(echo $brick | cut -f1 -d':');
+        path=$(echo $brick | cut -f2 -d':');
+
+        # get statedump and logs from each brick
+        process_list=$(ssh $host "ps ax | grep $path | grep brick-port");
+        logfile_path=$(echo $process_list | sed -e 's#.*-l \(.*\) --brick-port.*#\1#g');
+        pid=$(echo $process_list | cut -f1 -d' ');
+        ssh $host kill -USR1 $pid;
+        scp $host:/tmp/glusterdump.$pid ${output_path}/${brick_path}.glusterdump
+        scp $host:${logfile_path} ${output_path}/${brick_path}.logfile
+        ssh $host rm /tmp/glusterdump.$pid;
+    done
+}
+
+make_tarfile ()
+{
+    tar czf ${output_path}.tar.gz ${output_path}/
+    echo "details collected are kept in \"${output_path}.tar.gz\", you can use this to get more support"
+}
+
+main ()
+{
+    if [ $# -ne 1 ] ; then
+        echo "$0 needs mountpoint or volume name as the argument"
+        exit 1
+    fi
+
+    _init "$@";
+
+    get_client_details;
+
+    get_brick_details;
+
+    make_tarfile;
+}
+
+main "$@"
