@@ -1,1 +1,6 @@
 ## Just a place holder repository to keep my -not-so-nice- scripts
+
+
+lock-region.py: to run the lock-tests do something like below:
+
+bash$ find -type f -name '*.[ch]' -exec  ./lock-region.py {} \; | sort -n -r
